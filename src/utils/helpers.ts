@@ -14,7 +14,17 @@ export function jsonRes(data: any, status = 200): Response {
 
 export function stripHeaders(headers: Headers): Headers {
   const out = new Headers(headers);
-  const toDelete = ["cf-connecting-ip", "cf-ipcountry", "cf-ray", "host", "x-bridge-token"];
-  for (const h of toDelete) out.delete(h.toLowerCase());
+  const toDelete = [
+    "cf-connecting-ip",
+    "cf-ipcountry",
+    "cf-ray",
+    "host",
+    "x-bridge-token",
+    "authorization"
+  ];
+  for (const h of toDelete) {
+    out.delete(h);
+    out.delete(h.toLowerCase()); // 双重保险
+  }
   return out;
 }

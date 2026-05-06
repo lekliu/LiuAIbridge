@@ -110,6 +110,11 @@ export async function handleProxy(
   try {
     const response = await fetch(targetUrl, fetchOptions);
 
+    // 如果上游返回 401，我们在日志里打印出来
+    if (response.status === 401) {
+      console.error(`[Upstream Error] ${serviceName} API Key might be invalid (401)`);
+    }
+
     // 成功后异步记录单 Key 统计
     ctx.waitUntil(updateKeyStats(env, serviceName, pickedKeyObj.id, response.ok));
 

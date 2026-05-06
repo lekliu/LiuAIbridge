@@ -10,29 +10,53 @@ export interface Env {
 }
 
 export default {
-  async fetch(
-    request: Request,
-    env: Env,
-    ctx: ExecutionContext,
-  ): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-    if (request.method === "OPTIONS")
-      return new Response(null, { headers: CORS_HEADERS });
 
-    if (url.pathname === "/admin")
-      return new Response(ADMIN_HTML, {
-        headers: { "Content-Type": "text/html;charset=UTF-8" },
+    // 1. 处理 CORS 预检
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          ...CORS_HEADERS,
+          "Access-Control-Allow-Headers": "*"
+        }
       });
-    if (url.pathname.startsWith("/admin/api/"))
-      return handleAdminAPI(request, env);
+    }
 
-    const prefix = ["/google/", "/openai/", "/anthropic/"].find((p) =>
-      url.pathname.startsWith(p),
-    );
+    // 2. 管理界面
+    if (url.pathname === "/admin") {
+      return new Response(ADMIN_HTML, { headers: { "Content-Type": "text/html;charset=UTF-8" } });
+    }
+
+    // 3. 管理 API (使用 ADMIN_TOKEN)
+    if (url.pathname.startsWith("/admin/api/")) {
+      return handleAdminAPI(request, env);
+    }
+
+    // 4. 代理转发路由
+    const prefix = ["/google/", "/openai/", "/anthropic/"].find(p => url.pathname.startsWith(p));
     if (prefix) {
-      const token = request.headers.get("X-Bridge-Token");
-      if (!env.BRIDGE_TOKEN || token !== env.BRIDGE_TOKEN)
-        return jsonRes({ error: "Unauthorized Bridge" }, 401);
+      // --- 🔥 兼容性鉴权开始 ---
+      let incomingToken = request.headers.get("X-Bridge-Token");
+
+      // 如果没有自定义头，尝试从标准 Authorization: Bearer 获取 (OpenClaw 会走这里)
+      if (!incomingToken) {
+        const authHeader = request.headers.get("Authorization");
+        if (authHeader && authHeader.startsWith("Bearer ")) {
+          incomingToken = authHeader.substring(7);
+        }
+      }
+
+      // 🔥 优化点 1：使用 .trim() 强行去掉可能存在的空格或换行符
+      const sanitizedReceived = (incomingToken || "").trim();
+      const sanitizedExpected = (env.BRIDGE_TOKEN || "").trim();
+
+      if (!sanitizedExpected || sanitizedReceived !== sanitizedExpected) {
+        // 🔥 优化点 2：明确区分这是“网关”报的错
+        return jsonRes({ error: "LiuAIbridge: Invalid Bridge Token" }, 401);
+      }
+
       return handleProxy(request, env, prefix, ctx);
     }
     return jsonRes({ error: "LiuAIbridge: Not Found" }, 404);
