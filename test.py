@@ -10,8 +10,9 @@ import requests
 # ──────────────────────────────────────────────
 # 配置区 — 按需修改
 # ──────────────────────────────────────────────
-BASE_URL   = "http://127.0.0.1:8787"
-BRIDGE_TOKEN = "xxxxxxxx"        # 与 .dev.vars 的 ADMIN_TOKEN 保持一致
+BASE_URL   = "https://ai.baidu.xyz" # 你的域名地址
+# BASE_URL   = "http://127.0.0.1:8787"  # 本地测试地址
+BRIDGE_TOKEN = "ai1234"
 
 COMMON_HEADERS = {
     "Content-Type": "application/json",
@@ -27,7 +28,7 @@ def test_google_gemini():
     print("【测试】Google Gemini — gemini-3.1-flash-lite-preview")
     print("=" * 55)
 
-    url = "http://127.0.0.1:8787/google/v1beta/models/gemini-3.1-flash-lite-preview:generateContent"
+    url = f"{BASE_URL}/google/v1beta/models/gemini-3.1-flash-lite-preview:generateContent"
 
     payload = {
         "contents": [

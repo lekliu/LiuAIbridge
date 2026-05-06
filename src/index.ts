@@ -10,19 +10,31 @@ export interface Env {
 }
 
 export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(
+    request: Request,
+    env: Env,
+    ctx: ExecutionContext,
+  ): Promise<Response> {
     const url = new URL(request.url);
-    if (request.method === "OPTIONS") return new Response(null, { headers: CORS_HEADERS });
+    if (request.method === "OPTIONS")
+      return new Response(null, { headers: CORS_HEADERS });
 
-    if (url.pathname === "/admin") return new Response(ADMIN_HTML, { headers: { "Content-Type": "text/html;charset=UTF-8" } });
-    if (url.pathname.startsWith("/admin/api/")) return handleAdminAPI(request, env);
+    if (url.pathname === "/admin")
+      return new Response(ADMIN_HTML, {
+        headers: { "Content-Type": "text/html;charset=UTF-8" },
+      });
+    if (url.pathname.startsWith("/admin/api/"))
+      return handleAdminAPI(request, env);
 
-    const prefix = ["/google/", "/openai/", "/anthropic/"].find(p => url.pathname.startsWith(p));
+    const prefix = ["/google/", "/openai/", "/anthropic/"].find((p) =>
+      url.pathname.startsWith(p),
+    );
     if (prefix) {
       const token = request.headers.get("X-Bridge-Token");
-      if (!env.BRIDGE_TOKEN || token !== env.BRIDGE_TOKEN) return jsonRes({ error: "Unauthorized Bridge" }, 401);
+      if (!env.BRIDGE_TOKEN || token !== env.BRIDGE_TOKEN)
+        return jsonRes({ error: "Unauthorized Bridge" }, 401);
       return handleProxy(request, env, prefix, ctx);
     }
     return jsonRes({ error: "LiuAIbridge: Not Found" }, 404);
-  }
+  },
 };

@@ -1,3 +1,5 @@
+// src/handlers/proxy.ts
+/// <reference types="@cloudflare/workers-types" />
 import { GeminiAdapter } from "../adapters/gemini";
 import { jsonRes, stripHeaders, CORS_HEADERS } from "../utils/helpers";
 
@@ -7,62 +9,93 @@ const UPSTREAM_MAP: Record<string, string> = {
   "/anthropic/": "https://api.anthropic.com",
 };
 
-async function logUsage(env: any, service: string) {
-  const activeKey = `LAST_ACTIVE:${service}`;
-  await env.LIU_BRIDGE_KV.put(
-    activeKey, 
-    new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })
-  );
+/**
+ * 统计逻辑：更新具体某个 Key 的使用次数和最后活跃时间
+ */
+async function updateKeyStats(env: any, service: string, keyId: string, isSuccess: boolean) {
+  try {
+    const kvKey = service + "_CONFIG";
+    const raw = await env.LIU_BRIDGE_KV.get(kvKey);
+    if (!raw) return;
+
+    let config = JSON.parse(raw);
+    const idx = config.findIndex((k: any) => k.id === keyId);
+    if (idx !== -1) {
+      if (isSuccess) {
+        config[idx].successCount = (config[idx].successCount || 0) + 1;
+      } else {
+        config[idx].failCount = (config[idx].failCount || 0) + 1;
+      }
+      config[idx].last = new Date().toLocaleString("zh-CN", {
+        timeZone: "Asia/Shanghai",
+      });
+      await env.LIU_BRIDGE_KV.put(kvKey, JSON.stringify(config));
+    }
+
+    // 更新全局统计用于轮询计算
+    const statsKey = `STATS:${service}`;
+    const total = parseInt((await env.LIU_BRIDGE_KV.get(statsKey)) || "0");
+    await env.LIU_BRIDGE_KV.put(statsKey, (total + 1).toString());
+  } catch (e) {
+    console.error("Stats Update Error:", e);
+  }
 }
 
-export async function handleProxy(request: Request, env: any, prefix: string, ctx: ExecutionContext) {
+export async function handleProxy(
+  request: Request,
+  env: any,
+  prefix: string,
+  ctx: ExecutionContext,
+) {
   const url = new URL(request.url);
+  const serviceName = prefix.replace(/\//g, "").toUpperCase();
   const isOpenAIStyle = url.pathname.includes("/v1/chat/completions");
-  const serviceName = prefix.replace(/\//g, "").toUpperCase(); // 如 "GOOGLE"
-  
-  const kvKey = prefix.toUpperCase().replace(/\//g, "") + "_API_KEY";
-  const rawKeys = await env.LIU_BRIDGE_KV.get(kvKey);
 
-  if (!rawKeys) return jsonRes({ error: "No Keys" }, 404);
-  const keyPool = rawKeys.split(/[\s,\n]+/).filter(k => k.trim().length > 0);
+  // 1. 获取并解析 JSON Key 池
+  const rawConfig = await env.LIU_BRIDGE_KV.get(serviceName + "_CONFIG");
+  if (!rawConfig)
+    return jsonRes({ error: `Service ${serviceName} not configured` }, 404);
 
-  if (keyPool.length === 0) return jsonRes({ error: "API Key pool is empty" }, 404);
+  const allKeys = JSON.parse(rawConfig);
+  // 筛选启用的 Key
+  const activeKeys = allKeys.filter((k: any) => k.status === "enabled");
+  if (activeKeys.length === 0)
+    return jsonRes({ error: "No enabled keys available" }, 404);
 
-  // --- 🔥 核心修改：从随机改为轮询 ---
-  
-  const statsKey = `STATS:${serviceName}`;
-  // 1. 先从 KV 获取当前总请求数并 +1
-  const prevCount = parseInt(await env.LIU_BRIDGE_KV.get(statsKey) || "0");
-  const newCount = prevCount + 1;
+  // 2. 轮询算法
+  const globalCount = parseInt(
+    (await env.LIU_BRIDGE_KV.get(`STATS:${serviceName}`)) || "0",
+  );
+  const pickedKeyObj = activeKeys[globalCount % activeKeys.length];
+  const apiKey = pickedKeyObj.key;
 
-  // 2. 立即存回 KV（提前占位，防止并发冲突）
-  await env.LIU_BRIDGE_KV.put(statsKey, newCount.toString());
-
-  // 3. 用最新的计数取模，算出本次该用哪个 Key
-  const keyIndex = newCount % keyPool.length;
-  const apiKey = keyPool[keyIndex];
-
-  console.log(`[LiuAIbridge] Service: ${serviceName} | Pool: ${keyPool.length} | Round-Robin Index: ${keyIndex}`);
-
+  // 3. 构造上游请求配置
   let targetUrl: string;
   let fetchOptions: any = {
     method: request.method,
     headers: stripHeaders(request.headers),
-    body: request.body,
-    redirect: "follow"
+    body:
+      request.method === "GET" || request.method === "HEAD"
+        ? null
+        : request.body,
+    redirect: "follow",
   };
 
   if (prefix === "/google/") {
     if (isOpenAIStyle && request.method === "POST") {
+      // OpenAI 协议转 Gemini 协议逻辑
       const body = await request.clone().json();
       const model = body.model || "gemini-1.5-flash";
       targetUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
       fetchOptions.body = JSON.stringify(GeminiAdapter.toGemini(body));
     } else {
+      // 原生 Gemini 请求逻辑
       targetUrl = `https://generativelanguage.googleapis.com${url.pathname.slice(prefix.length - 1)}${url.search}`;
-      targetUrl += (url.search ? "&" : "?") + `key=${apiKey}`;
+      const connector = url.search ? "&" : "?";
+      targetUrl += `${connector}key=${apiKey}`;
     }
   } else {
+    // OpenAI 或 Anthropic 请求逻辑
     const host = UPSTREAM_MAP[prefix].replace("https://", "");
     targetUrl = `https://${host}${url.pathname.slice(prefix.length - 1)}${url.search}`;
     if (prefix === "/anthropic/") {
@@ -73,20 +106,37 @@ export async function handleProxy(request: Request, env: any, prefix: string, ct
     }
   }
 
+  // 4. 发起请求并处理响应
   try {
     const response = await fetch(targetUrl, fetchOptions);
-    if (response.ok) ctx.waitUntil(logUsage(env, prefix.replace(/\//g, "").toUpperCase()));
 
-    if (prefix === "/google/" && isOpenAIStyle && response.ok && !response.headers.get("content-type")?.includes("text/event-stream")) {
-      const data = await response.json();
-      const body = await request.clone().json();
-      return jsonRes(GeminiAdapter.toOpenAI(data, body.model || "gemini-pro"));
+    // 成功后异步记录单 Key 统计
+    ctx.waitUntil(updateKeyStats(env, serviceName, pickedKeyObj.id, response.ok));
+
+    // 5. 响应处理：处理 Google 的 OpenAI 协议转换（非流式）
+    if (prefix === "/google/" && isOpenAIStyle && response.ok) {
+      const contentType = response.headers.get("content-type") || "";
+      if (!contentType.includes("text/event-stream")) {
+        const rawData = await response.json();
+        const originalBody = await request.clone().json();
+        // 转换为 OpenAI 兼容格式
+        return jsonRes(
+          GeminiAdapter.toOpenAI(rawData, originalBody.model || "gemini-pro"),
+        );
+      }
     }
 
-    const newHeaders = new Headers(response.headers);
-    Object.entries(CORS_HEADERS).forEach(([k, v]) => newHeaders.set(k, v));
-    return new Response(response.body, { status: response.status, headers: newHeaders });
+    // 6. 默认透传响应（支持流式 Streaming）
+    const responseHeaders = new Headers(response.headers);
+    // 注入全局跨域头
+    Object.entries(CORS_HEADERS).forEach(([k, v]) => responseHeaders.set(k, v));
+
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: responseHeaders,
+    });
   } catch (e: any) {
-    return jsonRes({ error: e.message }, 502);
+    return jsonRes({ error: "LiuAIbridge Proxy Error: " + e.message }, 502);
   }
 }
