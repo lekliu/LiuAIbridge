@@ -12,7 +12,12 @@ const UPSTREAM_MAP: Record<string, string> = {
 /**
  * 统计逻辑：更新具体某个 Key 的使用次数和最后活跃时间
  */
-async function updateKeyStats(env: any, service: string, keyId: string, isSuccess: boolean) {
+async function updateKeyStats(
+  env: any,
+  service: string,
+  keyId: string,
+  isSuccess: boolean,
+) {
   try {
     const kvKey = service + "_CONFIG";
     const raw = await env.LIU_BRIDGE_KV.get(kvKey);
@@ -32,7 +37,6 @@ async function updateKeyStats(env: any, service: string, keyId: string, isSucces
       await env.LIU_BRIDGE_KV.put(kvKey, JSON.stringify(config));
     }
 
-    // 更新全局统计用于轮询计算
     const statsKey = `STATS:${service}`;
     const total = parseInt((await env.LIU_BRIDGE_KV.get(statsKey)) || "0");
     await env.LIU_BRIDGE_KV.put(statsKey, (total + 1).toString());
@@ -51,25 +55,32 @@ export async function handleProxy(
   const serviceName = prefix.replace(/\//g, "").toUpperCase();
   const isOpenAIStyle = url.pathname.includes("/v1/chat/completions");
 
-  // 1. 获取并解析 JSON Key 池
+  // 【1. 获取并解析请求体，识别流式需求】—— 新增
+  let isStream = false;
+  let requestBody: any = null;
+  if (request.method === "POST") {
+    requestBody = await request
+      .clone()
+      .json()
+      .catch(() => ({}));
+    isStream = requestBody.stream === true;
+  }
+
   const rawConfig = await env.LIU_BRIDGE_KV.get(serviceName + "_CONFIG");
   if (!rawConfig)
     return jsonRes({ error: `Service ${serviceName} not configured` }, 404);
 
   const allKeys = JSON.parse(rawConfig);
-  // 筛选启用的 Key
   const activeKeys = allKeys.filter((k: any) => k.status === "enabled");
   if (activeKeys.length === 0)
     return jsonRes({ error: "No enabled keys available" }, 404);
 
-  // 2. 轮询算法
   const globalCount = parseInt(
     (await env.LIU_BRIDGE_KV.get(`STATS:${serviceName}`)) || "0",
   );
   const pickedKeyObj = activeKeys[globalCount % activeKeys.length];
   const apiKey = pickedKeyObj.key;
 
-  // 3. 构造上游请求配置
   let targetUrl: string;
   let fetchOptions: any = {
     method: request.method,
@@ -83,19 +94,17 @@ export async function handleProxy(
 
   if (prefix === "/google/") {
     if (isOpenAIStyle && request.method === "POST") {
-      // OpenAI 协议转 Gemini 协议逻辑
-      const body = await request.clone().json();
-      const model = body.model || "gemini-1.5-flash";
-      targetUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-      fetchOptions.body = JSON.stringify(GeminiAdapter.toGemini(body));
+      // 【2. 根据是否流式映射不同的 Google 接口】 —— 修改
+      const action = isStream ? "streamGenerateContent" : "generateContent";
+      const model = requestBody.model || "gemini-1.5-flash";
+      targetUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:${action}?key=${apiKey}`;
+      fetchOptions.body = JSON.stringify(GeminiAdapter.toGemini(requestBody));
     } else {
-      // 原生 Gemini 请求逻辑
       targetUrl = `https://generativelanguage.googleapis.com${url.pathname.slice(prefix.length - 1)}${url.search}`;
       const connector = url.search ? "&" : "?";
       targetUrl += `${connector}key=${apiKey}`;
     }
   } else {
-    // OpenAI 或 Anthropic 请求逻辑
     const host = UPSTREAM_MAP[prefix].replace("https://", "");
     targetUrl = `https://${host}${url.pathname.slice(prefix.length - 1)}${url.search}`;
     if (prefix === "/anthropic/") {
@@ -106,34 +115,93 @@ export async function handleProxy(
     }
   }
 
-  // 4. 发起请求并处理响应
   try {
     const response = await fetch(targetUrl, fetchOptions);
 
-    // 如果上游返回 401，我们在日志里打印出来
     if (response.status === 401) {
-      console.error(`[Upstream Error] ${serviceName} API Key might be invalid (401)`);
+      console.error(
+        `[Upstream Error] ${serviceName} API Key might be invalid (401)`,
+      );
     }
 
-    // 成功后异步记录单 Key 统计
-    ctx.waitUntil(updateKeyStats(env, serviceName, pickedKeyObj.id, response.ok));
+    ctx.waitUntil(
+      updateKeyStats(env, serviceName, pickedKeyObj.id, response.ok),
+    );
 
-    // 5. 响应处理：处理 Google 的 OpenAI 协议转换（非流式）
-    if (prefix === "/google/" && isOpenAIStyle && response.ok) {
-      const contentType = response.headers.get("content-type") || "";
-      if (!contentType.includes("text/event-stream")) {
-        const rawData = await response.json();
-        const originalBody = await request.clone().json();
-        // 转换为 OpenAI 兼容格式
-        return jsonRes(
-          GeminiAdapter.toOpenAI(rawData, originalBody.model || "gemini-pro"),
-        );
-      }
+    // 【3. 核心：流式响应实时转换逻辑 (OpenAI 兼容模式)】 —— 新增/重构
+    if (prefix === "/google/" && isOpenAIStyle && isStream && response.ok) {
+      const { readable, writable } = new TransformStream();
+      const writer = writable.getWriter();
+      const encoder = new TextEncoder();
+      const decoder = new TextDecoder();
+      const modelName = requestBody.model || "gemini-pro";
+
+      // 异步处理流
+      (async () => {
+        const reader = response.body?.getReader();
+        let buffer = "";
+        let isFirstChunk = true;
+        try {
+          while (reader) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            // Google 流通常返回 JSON 数组格式 [{},{}]，我们需要解析其中的每一个 {}
+            let start;
+            while ((start = buffer.indexOf("{")) !== -1) {
+              let balance = 0;
+              let end = -1;
+              for (let i = start; i < buffer.length; i++) {
+                if (buffer[i] === "{") balance++;
+                if (buffer[i] === "}") balance--;
+                if (balance === 0) {
+                  end = i;
+                  break;
+                }
+              }
+              if (end !== -1) {
+                const jsonStr = buffer.substring(start, end + 1);
+                try {
+                  const json = JSON.parse(jsonStr);
+                  // 转换为 OpenAI SSE 格式
+                  const openaiChunk = GeminiAdapter.toOpenAIStreamChunk(
+                    json,
+                    modelName,
+                    isFirstChunk,
+                  );
+                  if (openaiChunk) {
+                    await writer.write(encoder.encode(openaiChunk));
+                    isFirstChunk = false;
+                  }
+                } catch (e) {}
+                buffer = buffer.substring(end + 1);
+              } else break;
+            }
+          }
+          await writer.write(encoder.encode("data: [DONE]\n\n"));
+        } catch (e) {
+          console.error("Stream Transform Error:", e);
+        } finally {
+          writer.close();
+        }
+      })();
+
+      return new Response(readable, {
+        headers: { ...CORS_HEADERS, "Content-Type": "text/event-stream" },
+      });
     }
 
-    // 6. 默认透传响应（支持流式 Streaming）
+    // 【4. 非流式响应转换保持不变】
+    if (prefix === "/google/" && isOpenAIStyle && response.ok && !isStream) {
+      const rawData = await response.json();
+      return jsonRes(
+        GeminiAdapter.toOpenAI(rawData, requestBody.model || "gemini-pro"),
+      );
+    }
+
+    // 默认透传响应
     const responseHeaders = new Headers(response.headers);
-    // 注入全局跨域头
     Object.entries(CORS_HEADERS).forEach(([k, v]) => responseHeaders.set(k, v));
 
     return new Response(response.body, {
