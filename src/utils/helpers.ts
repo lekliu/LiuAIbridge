@@ -28,3 +28,37 @@ export function stripHeaders(headers: Headers): Headers {
   }
   return out;
 }
+
+export interface StreamErrorEvent {
+  id: string;
+  object: string;
+  created: number;
+  model: string;
+  choices: Array<{
+    index: number;
+    delta: {};
+    finish_reason: string;
+  }>;
+  error: {
+    message: string;
+    type: string;
+  };
+}
+
+export function createStreamErrorEvent(model: string, errorMessage: string, errorType: string): StreamErrorEvent {
+  return {
+    id: `chatcmpl-${crypto.randomUUID()}`,
+    object: "chat.completion.chunk",
+    created: Math.floor(Date.now() / 1000),
+    model: model,
+    choices: [{ index: 0, delta: {}, finish_reason: "error" }],
+    error: {
+      message: errorMessage,
+      type: errorType,
+    },
+  };
+}
+
+export function formatSSE(data: any): string {
+  return `data: ${JSON.stringify(data)}\n\n`;
+}

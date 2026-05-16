@@ -13,8 +13,10 @@
 - **国内直连**：无需本地代理，通过 Cloudflare 全球加速。
 - **可视化后台**：内置 `/admin` 仪表盘，图形化管理各平台 API Key。
 - **多模型支持**：统一转发 Google、OpenAI、Anthropic 请求。
-- **安全加固**：API Key 存储于 KV 空间，请求采用 Header 鉴权（X-Bridge-Token）。
-- **流式传输**：原生支持流式响应（Streaming），无延迟体验。
+- **协议分层**：上游分别走 **Google / Anthropic / OpenAI 官方原生或官方兼容端**；下游可选用 **OpenAI 形态的** `POST .../v1/chat/completions`（Gemini 由网关转原生 Gemini；Claude 由 Anthropic 官方 OpenAI 兼容层处理），与 **原生路径**（如 `/google/v1beta/...`、`/anthropic/v1/messages`）通过路径区分、可同时保留。
+- **统一 OpenAI 形态入口**：`/compat/openai/google/...`、`/compat/openai/anthropic/...` 与 `/google/...`、`/anthropic/...` 等价，便于下游固定 Base URL。
+- **安全加固**：API Key 存储于 KV 空间，请求采用 Header 鉴权（`X-Bridge-Token` 或 `Authorization: Bearer` 桥接令牌）。
+- **流式传输**：Gemini（OpenAI 形态）由网关转换 SSE；Claude（OpenAI 形态）与 OpenAI 直连为上游 SSE 透传。
 
 ### 🚀 快速开始
 
@@ -26,10 +28,18 @@
    wrangler deploy
    ```
 2. **管理**：访问 `你的域名/admin` 配置 API Keys。
-3. **调用**：
-   - 原始：`https://api.openai.com/v1/chat/completions`
-   - 桥接：`https://你的域名/openai/v1/chat/completions`
-   - 需携带 Header: `X-Bridge-Token: 你的BRIDGE_TOKEN`
+3. **调用**（桥接令牌：`X-Bridge-Token` 或 `Authorization: Bearer`，值为 `BRIDGE_TOKEN`）：
+
+   | 用途 | Base / 示例 |
+   |------|----------------|
+   | OpenAI 官方 API | `https://你的域名/openai/v1/...` |
+   | Gemini **原生** | `https://你的域名/google/v1beta/models/...` |
+   | Gemini **OpenAI 形态**（网关 → Gemini 原生） | `POST https://你的域名/google/v1/chat/completions` |
+   | Claude **原生** | `POST https://你的域名/anthropic/v1/messages` |
+   | Claude **OpenAI 形态**（网关 → Anthropic 官方 OpenAI 兼容 `/v1/chat/completions`） | `POST https://你的域名/anthropic/v1/chat/completions` |
+   | 固定 **compat** 前缀（与上一行等价，仅路径改写） | `POST https://你的域名/compat/openai/google/v1/chat/completions`、`.../compat/openai/anthropic/v1/chat/completions` |
+
+   **说明**：当前跨厂商兼容以 **`/v1/chat/completions`**（非流式 + SSE 流式）为主；**`/v1/responses`** 未接入。能力边界以 **各上游实际支持** 及官方 OpenAI 兼容文档为准（Claude 侧兼容层 limitations 见 [Anthropic OpenAI SDK compatibility](https://docs.anthropic.com/en/api/openai-sdk)）。
 
 ### 🛠️ 本地开发与调试 (Local Development)
 

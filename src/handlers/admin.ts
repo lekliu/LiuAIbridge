@@ -1,9 +1,37 @@
 import { jsonRes } from "../utils/helpers";
+import { adminListModelsGoogle } from "./admin/list_models_google";
+import { adminListModelsOpenAI } from "./admin/list_models_openai";
+import { adminListModelsAnthropic } from "./admin/list_models_anthropic";
 
 export async function handleAdminAPI(request: Request, env: any) {
   const token = request.headers.get("X-Bridge-Token");
   if (!env.ADMIN_TOKEN || token !== env.ADMIN_TOKEN)
     return jsonRes({ error: "Unauthorized" }, 401);
+
+  const url = new URL(request.url);
+
+  if (url.pathname === "/admin/api/models/google") {
+    return adminListModelsGoogle(env);
+  }
+  if (url.pathname === "/admin/api/models/openai") {
+    return adminListModelsOpenAI(env);
+  }
+  if (url.pathname === "/admin/api/models/anthropic") {
+    return adminListModelsAnthropic(env);
+  }
+  /** 兼容旧书签：等同于 google */
+  if (url.pathname === "/admin/api/models") {
+    return adminListModelsGoogle(env);
+  }
+  if (url.pathname.startsWith("/admin/api/models")) {
+    return jsonRes(
+      {
+        error: "LiuAIbridge: 无效的模型列表路径",
+        hint: "请使用 /admin/api/models/google、/openai 或 /anthropic",
+      },
+      404,
+    );
+  }
 
   const services = ["GOOGLE", "OPENAI", "ANTHROPIC"];
 
@@ -18,9 +46,7 @@ export async function handleAdminAPI(request: Request, env: any) {
         data = JSON.parse(raw);
         let needsUpdate = false;
         data.forEach((item: any, index: number) => {
-          // 迁移 1: 处理名称
           if (!item.name) { item.name = `Key #${index + 1}`; needsUpdate = true; }
-          // 迁移 2: 将旧 count 迁移至 successCount 并初始化 failCount
           if (item.count !== undefined) {
             item.successCount = item.count;
             item.failCount = 0;

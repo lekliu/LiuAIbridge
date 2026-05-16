@@ -1,12 +1,13 @@
 // src/handlers/proxy.ts
 /// <reference types="@cloudflare/workers-types" />
 import { GeminiAdapter } from "../adapters/gemini";
-import { jsonRes, stripHeaders, CORS_HEADERS } from "../utils/helpers";
+import { AnthropicAdapter, ANTHROPIC_UPSTREAM_ORIGIN } from "../adapters/anthropic";
+import { jsonRes, stripHeaders, CORS_HEADERS, createStreamErrorEvent, formatSSE } from "../utils/helpers";
 
 const UPSTREAM_MAP: Record<string, string> = {
   "/google/": "https://generativelanguage.googleapis.com",
   "/openai/": "https://api.openai.com",
-  "/anthropic/": "https://api.anthropic.com",
+  "/anthropic/": ANTHROPIC_UPSTREAM_ORIGIN,
 };
 
 /**
@@ -106,12 +107,22 @@ export async function handleProxy(
     }
   } else {
     const host = UPSTREAM_MAP[prefix].replace("https://", "");
-    targetUrl = `https://${host}${url.pathname.slice(prefix.length - 1)}${url.search}`;
-    if (prefix === "/anthropic/") {
-      fetchOptions.headers.set("x-api-key", apiKey);
-      fetchOptions.headers.set("anthropic-version", "2023-06-01");
+    const upstreamPath = `${url.pathname.slice(prefix.length - 1)}${url.search}`;
+
+    if (
+      prefix === "/anthropic/" &&
+      AnthropicAdapter.isOpenAICompatPath(request.method, url.pathname)
+    ) {
+      targetUrl = `https://${host}${upstreamPath}`;
+      fetchOptions.body = AnthropicAdapter.serializeOpenAICompatBody(requestBody);
+      AnthropicAdapter.applyOpenAICompatAuth(fetchOptions.headers, apiKey);
     } else {
-      fetchOptions.headers.set("Authorization", `Bearer ${apiKey}`);
+      targetUrl = `https://${host}${upstreamPath}`;
+      if (prefix === "/anthropic/") {
+        AnthropicAdapter.applyNativeAuth(fetchOptions.headers, apiKey);
+      } else {
+        fetchOptions.headers.set("Authorization", `Bearer ${apiKey}`);
+      }
     }
   }
 
@@ -129,12 +140,26 @@ export async function handleProxy(
     );
 
     // 【3. 核心：流式响应实时转换逻辑 (OpenAI 兼容模式)】 —— 新增/重构
-    if (prefix === "/google/" && isOpenAIStyle && isStream && response.ok) {
+    if (prefix === "/google/" && isOpenAIStyle && isStream) {
+      const modelName = requestBody.model || "gemini-pro";
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: "Upstream service error" }));
+        const errorMessage = errorData.error?.message || `Upstream error: ${response.status}`;
+        const errorEvent = createStreamErrorEvent(modelName, errorMessage, "upstream_error");
+        return new Response(
+          formatSSE(errorEvent) + formatSSE("[DONE]"),
+          {
+            headers: { ...CORS_HEADERS, "Content-Type": "text/event-stream" },
+            status: response.status,
+          }
+        );
+      }
+
       const { readable, writable } = new TransformStream();
       const writer = writable.getWriter();
       const encoder = new TextEncoder();
       const decoder = new TextDecoder();
-      const modelName = requestBody.model || "gemini-pro";
 
       // 异步处理流
       (async () => {
@@ -164,7 +189,17 @@ export async function handleProxy(
                 const jsonStr = buffer.substring(start, end + 1);
                 try {
                   const json = JSON.parse(jsonStr);
-                  // 转换为 OpenAI SSE 格式
+                  
+                  if (json.error) {
+                    const errorEvent = createStreamErrorEvent(
+                      modelName,
+                      json.error.message || "Stream processing error",
+                      "stream_error"
+                    );
+                    await writer.write(encoder.encode(formatSSE(errorEvent)));
+                    break;
+                  }
+                  
                   const openaiChunk = GeminiAdapter.toOpenAIStreamChunk(
                     json,
                     modelName,
@@ -174,13 +209,32 @@ export async function handleProxy(
                     await writer.write(encoder.encode(openaiChunk));
                     isFirstChunk = false;
                   }
-                } catch (e) {}
+                } catch (e: any) {
+                  const errorEvent = createStreamErrorEvent(
+                    modelName,
+                    e.message || "JSON parse error",
+                    "parse_error"
+                  );
+                  await writer.write(encoder.encode(formatSSE(errorEvent)));
+                  console.error("Stream Parse Error:", e);
+                  break;
+                }
                 buffer = buffer.substring(end + 1);
               } else break;
             }
           }
-          await writer.write(encoder.encode("data: [DONE]\n\n"));
-        } catch (e) {
+          await writer.write(encoder.encode(formatSSE("[DONE]")));
+        } catch (e: any) {
+          const errorEvent = createStreamErrorEvent(
+            modelName,
+            e.message || "Stream transform error",
+            "transform_error"
+          );
+          try {
+            await writer.write(encoder.encode(formatSSE(errorEvent) + formatSSE("[DONE]")));
+          } catch (writeErr) {
+            console.error("Failed to send error event:", writeErr);
+          }
           console.error("Stream Transform Error:", e);
         } finally {
           writer.close();
