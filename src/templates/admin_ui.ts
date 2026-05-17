@@ -181,12 +181,40 @@ export const ADMIN_HTML = `
                     <div class="stat-label">失败</div>
                 </div>
             </div>
+            <div class="card rounded-2xl p-5">
+                <div class="flex justify-between items-center mb-4">
+                    <div class="flex items-center gap-3">
+                        <div class="w-8 h-8 rounded-lg bg-amber-500/20 flex items-center justify-center">
+                            <span class="text-amber-400 text-xs font-bold">⚙️</span>
+                        </div>
+                        <h2 class="font-semibold text-amber-300">默认模型配置</h2>
+                    </div>
+                    <button onclick="openDefaultModelsModal()" class="btn-primary px-4 py-1.5 rounded-lg text-sm font-medium text-white">
+                        编辑默认模型
+                    </button>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4" id="defaultModelsDisplay">
+                    <div class="bg-slate-800/50 rounded-lg p-3">
+                        <div class="text-xs text-gray-500 mb-1">Google 默认模型</div>
+                        <div class="text-sm text-gray-300" id="googleDefaultModels">加载中...</div>
+                    </div>
+                    <div class="bg-slate-800/50 rounded-lg p-3">
+                        <div class="text-xs text-gray-500 mb-1">OpenAI 默认模型</div>
+                        <div class="text-sm text-gray-300" id="openaiDefaultModels">加载中...</div>
+                    </div>
+                    <div class="bg-slate-800/50 rounded-lg p-3">
+                        <div class="text-xs text-gray-500 mb-1">Anthropic 默认模型</div>
+                        <div class="text-sm text-gray-300" id="anthropicDefaultModels">加载中...</div>
+                    </div>
+                </div>
+            </div>
+
             <div class="services-grid" id="servicesContainer"></div>
         </div>
     </div>
 
     <script>
-        var SK="LIU_ADMIN_TOKEN"; var G_TOKEN=""; var G_CONF={};
+        var SK="LIU_ADMIN_TOKEN"; var G_TOKEN=""; var G_CONF={}; var G_DEFAULT_MODELS={};
         
         window.onload=function(){ 
             var t=localStorage.getItem(SK); 
@@ -206,8 +234,103 @@ export const ADMIN_HTML = `
                 const data=await res.json();
                 G_CONF=data.config;
                 localStorage.setItem(SK, G_TOKEN);
+                await loadDefaultModels();
                 render();
             }catch(e){alert('服务器连接失败');}
+        }
+
+        async function loadDefaultModels() {
+            try {
+                const res = await fetch('/admin/api/default-models', {headers: {'X-Bridge-Token': G_TOKEN}});
+                if (res.ok) {
+                    G_DEFAULT_MODELS = await res.json();
+                }
+            } catch (e) {
+                console.error('Failed to load default models:', e);
+            }
+        }
+
+        function renderDefaultModels() {
+            document.getElementById('googleDefaultModels').textContent = 
+                G_DEFAULT_MODELS.google?.length > 0 ? G_DEFAULT_MODELS.google.join(', ') : '未配置（使用内置默认值）';
+            document.getElementById('openaiDefaultModels').textContent = 
+                G_DEFAULT_MODELS.openai?.length > 0 ? G_DEFAULT_MODELS.openai.join(', ') : '未配置（使用内置默认值）';
+            document.getElementById('anthropicDefaultModels').textContent = 
+                G_DEFAULT_MODELS.anthropic?.length > 0 ? G_DEFAULT_MODELS.anthropic.join(', ') : '未配置（使用内置默认值）';
+        }
+
+        function openDefaultModelsModal() {
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay';
+            modal.innerHTML = \`
+                <div class="modal-content" style="max-width: 600px;">
+                    <h3 class="text-lg font-semibold mb-4">默认模型配置</h3>
+                    <p class="text-sm text-gray-400 mb-4">
+                        当用户请求的模型为 "default" 或为空时，系统会从以下配置的模型列表中随机选择一个。
+                    </p>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1.5">Google 默认模型（多个用逗号分隔）</label>
+                            <input type="text" id="defaultModelsGoogle" 
+                                   value="\${(G_DEFAULT_MODELS.google || []).join(', ')}"
+                                   placeholder="例如: gemini-1.5-flash, gemini-1.5-pro"
+                                   class="w-full px-3 py-2.5 rounded-lg bg-slate-800 border border-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition text-white placeholder-gray-500 font-mono text-sm">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1.5">OpenAI 默认模型（多个用逗号分隔）</label>
+                            <input type="text" id="defaultModelsOpenAI" 
+                                   value="\${(G_DEFAULT_MODELS.openai || []).join(', ')}"
+                                   placeholder="例如: gpt-4o, gpt-3.5-turbo"
+                                   class="w-full px-3 py-2.5 rounded-lg bg-slate-800 border border-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition text-white placeholder-gray-500 font-mono text-sm">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1.5">Anthropic 默认模型（多个用逗号分隔）</label>
+                            <input type="text" id="defaultModelsAnthropic" 
+                                   value="\${(G_DEFAULT_MODELS.anthropic || []).join(', ')}"
+                                   placeholder="例如: claude-3-5-sonnet, claude-3-opus"
+                                   class="w-full px-3 py-2.5 rounded-lg bg-slate-800 border border-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition text-white placeholder-gray-500 font-mono text-sm">
+                        </div>
+                    </div>
+                    <div class="flex gap-3 mt-5">
+                        <button class="flex-1 px-4 py-2.5 rounded-lg bg-slate-700 text-gray-300 hover:bg-slate-600 transition font-medium" 
+                                onclick="this.closest('.modal-overlay').remove()">取消</button>
+                        <button class="flex-1 px-4 py-2.5 rounded-lg btn-primary text-white hover:bg-blue-600 transition font-medium" 
+                                onclick="saveDefaultModels()">保存配置</button>
+                    </div>
+                </div>
+            \`;
+            document.body.appendChild(modal);
+        }
+
+        async function saveDefaultModels() {
+            const google = document.getElementById('defaultModelsGoogle').value
+                .split(',').map(s => s.trim()).filter(s => s);
+            const openai = document.getElementById('defaultModelsOpenAI').value
+                .split(',').map(s => s.trim()).filter(s => s);
+            const anthropic = document.getElementById('defaultModelsAnthropic').value
+                .split(',').map(s => s.trim()).filter(s => s);
+            
+            try {
+                const res = await fetch('/admin/api/default-models', {
+                    method: 'POST',
+                    headers: {
+                        'X-Bridge-Token': G_TOKEN,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ google, openai, anthropic })
+                });
+                
+                if (res.ok) {
+                    G_DEFAULT_MODELS = { google, openai, anthropic };
+                    renderDefaultModels();
+                    document.querySelector('.modal-overlay').remove();
+                    showToast('默认模型配置已保存', 'success');
+                } else {
+                    showToast('保存失败', 'error');
+                }
+            } catch (e) {
+                showToast('保存失败', 'error');
+            }
         }
 
         function render(){
@@ -215,6 +338,7 @@ export const ADMIN_HTML = `
             document.getElementById('logout').classList.remove('hidden');
             document.getElementById('main').classList.remove('hidden');
             
+            renderDefaultModels();
             updateStats();
             
             const container = document.getElementById('servicesContainer');
@@ -281,20 +405,33 @@ export const ADMIN_HTML = `
             return colors[service] || 'bg-gray-500/20 text-gray-400';
         }
 
-        function updateStats() {
+        async function updateStats() {
             let total = 0, success = 0, fail = 0;
-            Object.values(G_CONF).forEach(service => {
-                if (service) {
-                    service.forEach(key => {
-                        success += key.successCount || 0;
-                        fail += key.failCount || 0;
+            
+            try {
+                const res = await fetch('/admin/api/stats', { headers: { 'X-Bridge-Token': G_TOKEN } });
+                if (res.ok) {
+                    const data = await res.json();
+                    const stats = data?.stats || {};
+                    Object.values(stats).forEach((service) => {
+                        if (service?.keyStats) {
+                            Object.values(service.keyStats).forEach((key) => {
+                                success += key.successCount || 0;
+                                fail += key.failCount || 0;
+                            });
+                        }
                     });
                 }
-            });
+            } catch (e) {
+                console.error('Failed to fetch stats:', e);
+            }
+            
             total = success + fail;
             document.getElementById('statTotal').querySelector('.stat-value').textContent = total;
             document.getElementById('statSuccess').querySelector('.stat-value').textContent = success;
             document.getElementById('statFail').querySelector('.stat-value').textContent = fail;
+            
+            setTimeout(updateStats, 5000);
         }
 
         async function sync(s){

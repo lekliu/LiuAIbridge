@@ -11,38 +11,38 @@ const UPSTREAM_MAP: Record<string, string> = {
 };
 
 /**
- * 统计逻辑：更新具体某个 Key 的使用次数和最后活跃时间
+ * 统计逻辑：更新配置 KV 中具体某个 Key 的使用次数和最后活跃时间
+ * 不新增额外 KV，统计数据直接存储在配置 KV 的 key 对象中
  */
 async function updateKeyStats(
   env: any,
   service: string,
-  keyId: string,
+  apiKey: string,
   isSuccess: boolean,
 ) {
+  const kvKey = `${service}_CONFIG`;
+
   try {
-    const kvKey = service + "_CONFIG";
     const raw = await env.LIU_BRIDGE_KV.get(kvKey);
     if (!raw) return;
 
-    let config = JSON.parse(raw);
-    const idx = config.findIndex((k: any) => k.id === keyId);
-    if (idx !== -1) {
-      if (isSuccess) {
-        config[idx].successCount = (config[idx].successCount || 0) + 1;
-      } else {
-        config[idx].failCount = (config[idx].failCount || 0) + 1;
-      }
-      config[idx].last = new Date().toLocaleString("zh-CN", {
-        timeZone: "Asia/Shanghai",
-      });
-      await env.LIU_BRIDGE_KV.put(kvKey, JSON.stringify(config));
+    const keys = JSON.parse(raw);
+    const key = keys.find((k: any) => k.key === apiKey);
+    if (!key) return;
+
+    if (isSuccess) {
+      key.successCount = (key.successCount || 0) + 1;
+    } else {
+      key.failCount = (key.failCount || 0) + 1;
     }
 
-    const statsKey = `STATS:${service}`;
-    const total = parseInt((await env.LIU_BRIDGE_KV.get(statsKey)) || "0");
-    await env.LIU_BRIDGE_KV.put(statsKey, (total + 1).toString());
+    key.last = new Date().toLocaleString("zh-CN", {
+      timeZone: "Asia/Shanghai",
+    });
+
+    await env.LIU_BRIDGE_KV.put(kvKey, JSON.stringify(keys));
   } catch (e) {
-    console.error("Stats Update Error:", e);
+    console.error("[Stats] Failed to update stats:", e);
   }
 }
 
@@ -76,10 +76,8 @@ export async function handleProxy(
   if (activeKeys.length === 0)
     return jsonRes({ error: "No enabled keys available" }, 404);
 
-  const globalCount = parseInt(
-    (await env.LIU_BRIDGE_KV.get(`STATS:${serviceName}`)) || "0",
-  );
-  const pickedKeyObj = activeKeys[globalCount % activeKeys.length];
+  const randomIndex = Math.floor(Math.random() * activeKeys.length);
+  const pickedKeyObj = activeKeys[randomIndex];
   const apiKey = pickedKeyObj.key;
 
   let targetUrl: string;
@@ -136,7 +134,7 @@ export async function handleProxy(
     }
 
     ctx.waitUntil(
-      updateKeyStats(env, serviceName, pickedKeyObj.id, response.ok),
+      updateKeyStats(env, serviceName, apiKey, response.ok),
     );
 
     // 【3. 核心：流式响应实时转换逻辑 (OpenAI 兼容模式)】 —— 新增/重构
@@ -144,7 +142,7 @@ export async function handleProxy(
       const modelName = requestBody.model || "gemini-pro";
       
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: "Upstream service error" }));
+        const errorData = (await response.json().catch(() => ({ error: "Upstream service error" }))) as { error?: { message?: string } };
         const errorMessage = errorData.error?.message || `Upstream error: ${response.status}`;
         const errorEvent = createStreamErrorEvent(modelName, errorMessage, "upstream_error");
         return new Response(

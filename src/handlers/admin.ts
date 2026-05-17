@@ -34,6 +34,112 @@ export async function handleAdminAPI(request: Request, env: any) {
   }
 
   const services = ["GOOGLE", "OPENAI", "ANTHROPIC"];
+  const normalizedPath = url.pathname.replace(/\/$/, '');
+    
+  if (normalizedPath === "/admin/api/stats") {
+    if (request.method === "GET") {
+      const stats: any = { keyStats: {} };
+      for (const s of services) {
+        const raw = await env.LIU_BRIDGE_KV.get(`${s}_CONFIG`);
+        if (raw) {
+          const keys = JSON.parse(raw);
+          keys.forEach((k: any) => {
+            const keyId = k.key.substring(0, 16);
+            stats.keyStats[keyId] = {
+              successCount: k.successCount || 0,
+              failCount: k.failCount || 0,
+              last: k.last || "",
+            };
+          });
+        }
+      }
+      return jsonRes({ stats: { ALL: stats } });
+    }
+    return jsonRes({ error: "Method Not Allowed" }, 405);
+  }
+  
+  if (normalizedPath === "/admin/api/default-models") {
+    console.log(`[DEBUG] default-models route matched, method: ${request.method}`);
+    
+    if (request.method === "GET") {
+      try {
+        const raw = await env.LIU_BRIDGE_KV.get("DEFAULT_MODELS_CONFIG");
+        const config = raw ? JSON.parse(raw) : {};
+        return jsonRes({
+          google: config.google || [],
+          openai: config.openai || [],
+          anthropic: config.anthropic || [],
+        });
+      } catch (e: any) {
+        console.error(`[ERROR] GET default-models: ${e?.message || String(e)}`);
+        return jsonRes({ error: "Failed to load default models config" }, 500);
+      }
+    }
+    
+    if (request.method === "POST") {
+      try {
+        console.log("[DEBUG] POST default-models: reading body");
+        
+        const contentType = request.headers.get("content-type");
+        console.log(`[DEBUG] POST default-models Content-Type: ${contentType}`);
+        
+        if (!contentType || !contentType.includes("application/json")) {
+          return jsonRes({ 
+            error: "Invalid Content-Type", 
+            expected: "application/json",
+            received: contentType
+          }, 400);
+        }
+        
+        const body = (await request.json()) as { google?: any[]; openai?: any[]; anthropic?: any[] };
+        console.log(`[DEBUG] POST default-models body: ${JSON.stringify(body)}`);
+        const google = Array.isArray(body.google) ? body.google : [];
+        const openai = Array.isArray(body.openai) ? body.openai : [];
+        const anthropic = Array.isArray(body.anthropic) ? body.anthropic : [];
+        const config = { google, openai, anthropic };
+        
+        console.log(`[DEBUG] POST default-models saving: ${JSON.stringify(config)}`);
+        
+        if (!env.LIU_BRIDGE_KV) {
+          throw new Error("KV storage not available");
+        }
+        
+        await env.LIU_BRIDGE_KV.put("DEFAULT_MODELS_CONFIG", JSON.stringify(config));
+        console.log("[DEBUG] POST default-models saved successfully");
+        
+        return jsonRes({ success: true, config });
+      } catch (e: any) {
+        console.error(`[ERROR] POST default-models: ${e?.message || String(e)}`);
+        console.error(`[ERROR] Stack: ${e?.stack || "No stack"}`);
+        
+        const errorType = e?.message?.toLowerCase() || "unknown";
+        let status = 500;
+        
+        if (errorType.includes("kv") || errorType.includes("storage")) {
+          return jsonRes({ 
+            error: "KV storage error", 
+            details: e?.message || String(e),
+            hint: "Please check KV namespace binding in Cloudflare Dashboard",
+            path: normalizedPath,
+            method: request.method
+          }, 500);
+        }
+        
+        if (errorType.includes("syntax") || errorType.includes("json")) {
+          status = 400;
+        }
+        
+        return jsonRes({ 
+          error: "Failed to save default models config", 
+          details: e?.message || String(e),
+          path: normalizedPath,
+          method: request.method,
+          timestamp: new Date().toISOString()
+        }, status);
+      }
+    }
+    return jsonRes({ error: "Method Not Allowed" }, 405);
+  }
 
   if (request.method === "GET") {
     const config: any = {};
@@ -53,13 +159,12 @@ export async function handleAdminAPI(request: Request, env: any) {
             delete item.count;
             needsUpdate = true;
           }
-          if (item.successCount === undefined) item.successCount = 0;
-          if (item.failCount === undefined) item.failCount = 0;
         });
         if (needsUpdate) {
           await env.LIU_BRIDGE_KV.put(kvKey, JSON.stringify(data));
         }
       }
+
       config[s.toLowerCase()] = data;
     }
     return jsonRes({ config });
