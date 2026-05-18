@@ -11,9 +11,6 @@ export interface Env {
 
 const COMPAT_OPENAI_PREFIX = "/compat/openai/";
 
-/**
- * `/compat/openai/{google|anthropic}/...` → 与 `/google/...`、`/anthropic/...` 等价，便于下游固定 base 为 OpenAI 形态路径。
- */
 function resolveCompatOpenAIRequest(
   request: Request,
   url: URL,
@@ -58,7 +55,6 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
-    // 1. 处理 CORS 预检
     if (request.method === "OPTIONS") {
       return new Response(null, {
         status: 204,
@@ -69,17 +65,14 @@ export default {
       });
     }
 
-    // 2. 管理界面
     if (url.pathname === "/admin") {
       return new Response(ADMIN_HTML, { headers: { "Content-Type": "text/html;charset=UTF-8" } });
     }
 
-    // 3. 管理 API (使用 ADMIN_TOKEN)
     if (url.pathname.startsWith("/admin/api/")) {
       return handleAdminAPI(request, env);
     }
 
-    // 4. 代理转发路由（含 /compat/openai/{google|anthropic}/ 重写后与 /google/、/anthropic/ 等价）
     let proxyRequest = request;
     let proxyUrl = url;
     const compat = resolveCompatOpenAIRequest(request, url);
@@ -93,10 +86,8 @@ export default {
       proxyUrl.pathname.startsWith(p),
     );
     if (prefix) {
-      // --- 🔥 兼容性鉴权开始 ---
       let incomingToken = proxyRequest.headers.get("X-Bridge-Token");
 
-      // 如果没有自定义头，尝试从标准 Authorization: Bearer 获取 (OpenClaw 会走这里)
       if (!incomingToken) {
         const authHeader = proxyRequest.headers.get("Authorization");
         if (authHeader && authHeader.startsWith("Bearer ")) {
@@ -104,12 +95,10 @@ export default {
         }
       }
 
-      // 🔥 优化点 1：使用 .trim() 强行去掉可能存在的空格或换行符
       const sanitizedReceived = (incomingToken || "").trim();
       const sanitizedExpected = (env.BRIDGE_TOKEN || "").trim();
 
       if (!sanitizedExpected || sanitizedReceived !== sanitizedExpected) {
-        // 🔥 优化点 2：明确区分这是“网关”报的错
         return jsonRes({ error: "LiuAIbridge: Invalid Bridge Token" }, 401);
       }
 

@@ -10,42 +10,6 @@ const UPSTREAM_MAP: Record<string, string> = {
   "/anthropic/": ANTHROPIC_UPSTREAM_ORIGIN,
 };
 
-/**
- * 统计逻辑：更新配置 KV 中具体某个 Key 的使用次数和最后活跃时间
- * 不新增额外 KV，统计数据直接存储在配置 KV 的 key 对象中
- */
-async function updateKeyStats(
-  env: any,
-  service: string,
-  apiKey: string,
-  isSuccess: boolean,
-) {
-  const kvKey = `${service}_CONFIG`;
-
-  try {
-    const raw = await env.LIU_BRIDGE_KV.get(kvKey);
-    if (!raw) return;
-
-    const keys = JSON.parse(raw);
-    const key = keys.find((k: any) => k.key === apiKey);
-    if (!key) return;
-
-    if (isSuccess) {
-      key.successCount = (key.successCount || 0) + 1;
-    } else {
-      key.failCount = (key.failCount || 0) + 1;
-    }
-
-    key.last = new Date().toLocaleString("zh-CN", {
-      timeZone: "Asia/Shanghai",
-    });
-
-    await env.LIU_BRIDGE_KV.put(kvKey, JSON.stringify(keys));
-  } catch (e) {
-    console.error("[Stats] Failed to update stats:", e);
-  }
-}
-
 export async function handleProxy(
   request: Request,
   env: any,
@@ -56,7 +20,6 @@ export async function handleProxy(
   const serviceName = prefix.replace(/\//g, "").toUpperCase();
   const isOpenAIStyle = url.pathname.includes("/v1/chat/completions");
 
-  // 【1. 获取并解析请求体，识别流式需求】—— 新增
   let isStream = false;
   let requestBody: any = null;
   if (request.method === "POST") {
@@ -93,7 +56,6 @@ export async function handleProxy(
 
   if (prefix === "/google/") {
     if (isOpenAIStyle && request.method === "POST") {
-      // 【2. 根据是否流式映射不同的 Google 接口】 —— 修改
       const action = isStream ? "streamGenerateContent" : "generateContent";
       const model = requestBody.model || "gemini-1.5-flash";
       targetUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:${action}?key=${apiKey}`;
@@ -133,11 +95,6 @@ export async function handleProxy(
       );
     }
 
-    ctx.waitUntil(
-      updateKeyStats(env, serviceName, apiKey, response.ok),
-    );
-
-    // 【3. 核心：流式响应实时转换逻辑 (OpenAI 兼容模式)】 —— 新增/重构
     if (prefix === "/google/" && isOpenAIStyle && isStream) {
       const modelName = requestBody.model || "gemini-pro";
       
@@ -159,7 +116,6 @@ export async function handleProxy(
       const encoder = new TextEncoder();
       const decoder = new TextDecoder();
 
-      // 异步处理流
       (async () => {
         const reader = response.body?.getReader();
         let buffer = "";
@@ -170,7 +126,6 @@ export async function handleProxy(
             if (done) break;
             buffer += decoder.decode(value, { stream: true });
 
-            // Google 流通常返回 JSON 数组格式 [{},{}]，我们需要解析其中的每一个 {}
             let start;
             while ((start = buffer.indexOf("{")) !== -1) {
               let balance = 0;
@@ -244,7 +199,6 @@ export async function handleProxy(
       });
     }
 
-    // 【4. 非流式响应转换保持不变】
     if (prefix === "/google/" && isOpenAIStyle && response.ok && !isStream) {
       const rawData = await response.json();
       return jsonRes(
@@ -252,7 +206,6 @@ export async function handleProxy(
       );
     }
 
-    // 默认透传响应
     const responseHeaders = new Headers(response.headers);
     Object.entries(CORS_HEADERS).forEach(([k, v]) => responseHeaders.set(k, v));
 

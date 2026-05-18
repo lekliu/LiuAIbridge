@@ -11,8 +11,8 @@ import sys
 # ──────────────────────────────────────────────
 # 配置区
 # ──────────────────────────────────────────────
-# BASE_URL = "http://127.0.0.1:8787"  # 本地调试时取消注释
-BRIDGE_TOKEN = "kpi123456"
+BASE_URL = "https://ai.703803.xyz"  # 本地调试时取消注释
+BRIDGE_TOKEN = "ai123456"
 
 # 网关现在同时支持 X-Bridge-Token 和标准的 Authorization: Bearer
 COMMON_HEADERS = {

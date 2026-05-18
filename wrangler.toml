@@ -7,51 +7,22 @@ name            = "liuaibridge"
 main            = "src/index.ts"
 compatibility_date = "2024-09-23"
 
-# Enable Smart Placement so Cloudflare automatically runs the Worker
-# closer to upstream AI API servers (reduces round-trip latency).
 [placement]
 mode = "smart"
 
-# ─── KV Namespace ────────────────────────────────────────────────────────────
-# Bind a KV namespace to store API keys.
-#
-# Steps to create and bind:
-#   1. Run: wrangler kv namespace create LIU_BRIDGE_KV
-#   2. Copy the generated `id` into the binding below.
-#   3. (Optional) create a preview namespace for local dev:
-#      wrangler kv namespace create LIU_BRIDGE_KV --preview
-#
-# Then populate your keys:
-#   wrangler kv key put GOOGLE_API_KEY    "AIza..."  --namespace-id <id>
-#   wrangler kv key put OPENAI_API_KEY    "sk-..."   --namespace-id <id>
-#   wrangler kv key put ANTHROPIC_API_KEY "sk-ant-..." --namespace-id <id>
-
 [[kv_namespaces]]
 binding    = "LIU_BRIDGE_KV"
-id         = "c9ea55aec1af47edb7d2d75a2150559f"          # <-- replace with your real KV id
-preview_id = "YOUR_KV_PREVIEW_NAMESPACE_ID"  # <-- replace (optional, for wrangler dev)
+id         = "c9ea55aec1af47edb7d2d75a2150559f"
+preview_id = "YOUR_KV_PREVIEW_NAMESPACE_ID"
 
-# ─── Environment Variables ────────────────────────────────────────────────────
-# Two separate tokens for two separate concerns:
-#
-#   ADMIN_TOKEN  — 用于登录 /admin 可视化后台（高权限，用于管理 API Key）
-#                  wrangler secret put ADMIN_TOKEN
-#
-#   BRIDGE_TOKEN — 用于客户端调用代理接口（/google/, /openai/, /anthropic/）
-#                  wrangler secret put BRIDGE_TOKEN
-#
-# 本地开发在 .dev.vars 中设置，生产环境用 wrangler secret put。
-# DO NOT commit real tokens here.
 [vars]
 # ADMIN_TOKEN  = ""   # populate via: wrangler secret put ADMIN_TOKEN
 # BRIDGE_TOKEN = ""   # populate via: wrangler secret put BRIDGE_TOKEN
 
-# ─── Routes (optional) ────────────────────────────────────────────────────────
-# Uncomment and adjust if you want to attach the Worker to a custom domain.
+[routes]
 # routes = [
 #   { pattern = "ai-bridge.example.com/*", zone_name = "example.com" }
 # ]
 
-# ─── Observability ───────────────────────────────────────────────────────────
 [observability]
 enabled = true
