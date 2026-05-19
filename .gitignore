@@ -10,6 +10,7 @@ test.py
 
 # Node.js 依赖 
 node_modules/
+LiuKV/
 
 # 编译产物
 dist/

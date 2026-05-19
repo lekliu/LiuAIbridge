@@ -3,12 +3,46 @@
 import { GeminiAdapter } from "../adapters/gemini";
 import { AnthropicAdapter, ANTHROPIC_UPSTREAM_ORIGIN } from "../adapters/anthropic";
 import { jsonRes, stripHeaders, CORS_HEADERS, createStreamErrorEvent, formatSSE } from "../utils/helpers";
+import { createLiuKVFromEnv, LiuKVClient } from "../utils/liukv";
 
 const UPSTREAM_MAP: Record<string, string> = {
   "/google/": "https://generativelanguage.googleapis.com",
   "/openai/": "https://api.openai.com",
   "/anthropic/": ANTHROPIC_UPSTREAM_ORIGIN,
 };
+
+async function findKeyName(env: any, serviceName: string, apiKey: string): Promise<string | null> {
+  try {
+    const raw = await env.LIU_BRIDGE_KV.get(`${serviceName}_CONFIG`);
+    if (!raw) return null;
+    const keys = JSON.parse(raw);
+    const found = keys.find((k: any) => k.key === apiKey);
+    return found?.name || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function updateKeyStats(env: any, serviceName: string, apiKey: string, success: boolean) {
+  try {
+    const liukv = createLiuKVFromEnv(env);
+    if (!liukv.isEnabled()) return;
+
+    const name = await findKeyName(env, serviceName, apiKey);
+    const keyId = LiuKVClient.safeKeyId(name, apiKey);
+    const baseKey = `${serviceName}_${keyId}`;
+
+    if (success) {
+      await liukv.incr(`${baseKey}_success`, 1);
+    } else {
+      await liukv.incr(`${baseKey}_fail`, 1);
+    }
+
+    await liukv.put(`${baseKey}_last`, new Date().toLocaleString());
+  } catch (e) {
+    console.error("[Stats] Failed to update key stats:", e);
+  }
+}
 
 export async function handleProxy(
   request: Request,
@@ -88,6 +122,10 @@ export async function handleProxy(
 
   try {
     const response = await fetch(targetUrl, fetchOptions);
+
+    ctx.waitUntil(
+      updateKeyStats(env, serviceName, apiKey, response.ok),
+    );
 
     if (response.status === 401) {
       console.error(

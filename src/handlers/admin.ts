@@ -2,6 +2,33 @@ import { jsonRes } from "../utils/helpers";
 import { adminListModelsGoogle } from "./admin/list_models_google";
 import { adminListModelsOpenAI } from "./admin/list_models_openai";
 import { adminListModelsAnthropic } from "./admin/list_models_anthropic";
+import { createLiuKVFromEnv, LiuKVClient } from "../utils/liukv";
+
+async function mergeStatsFromLiuKV(env: any, config: Record<string, any[]>): Promise<Record<string, any[]>> {
+  const liukv = createLiuKVFromEnv(env);
+  if (!liukv.isEnabled()) return config;
+
+  try {
+    const allStats = await liukv.getAll();
+
+    for (const [service, keys] of Object.entries(config)) {
+      const serviceUpper = service.toUpperCase();
+      
+      keys.forEach((key: any) => {
+        const keyId = LiuKVClient.safeKeyId(key.name, key.key);
+        const baseKey = `${serviceUpper}_${keyId}`;
+        
+        key.successCount = parseInt(allStats[`${baseKey}_success`] || "0");
+        key.failCount = parseInt(allStats[`${baseKey}_fail`] || "0");
+        key.last = allStats[`${baseKey}_last`] || "";
+      });
+    }
+  } catch (e) {
+    console.error("[Stats] Failed to merge stats from LiuKV:", e);
+  }
+
+  return config;
+}
 
 export async function handleAdminAPI(request: Request, env: any) {
   const token = request.headers.get("X-Bridge-Token");
@@ -38,17 +65,24 @@ export async function handleAdminAPI(request: Request, env: any) {
     
   if (normalizedPath === "/admin/api/stats") {
     if (request.method === "GET") {
+      const liukv = createLiuKVFromEnv(env);
+      const allStats: Record<string, string> = liukv.isEnabled() 
+        ? await liukv.getAll() 
+        : {};
+      
       const stats: any = { keyStats: {} };
       for (const s of services) {
         const raw = await env.LIU_BRIDGE_KV.get(`${s}_CONFIG`);
         if (raw) {
           const keys = JSON.parse(raw);
           keys.forEach((k: any) => {
-            const keyId = k.key.substring(0, 16);
-            stats.keyStats[keyId] = {
-              successCount: k.successCount || 0,
-              failCount: k.failCount || 0,
-              last: k.last || "",
+            const keyId = LiuKVClient.safeKeyId(k.name, k.key);
+            const baseKey = `${s}_${keyId}`;
+            const keyId16 = k.key.substring(0, 16);
+            stats.keyStats[keyId16] = {
+              successCount: parseInt(allStats[`${baseKey}_success`] || "0"),
+              failCount: parseInt(allStats[`${baseKey}_fail`] || "0"),
+              last: allStats[`${baseKey}_last`] || "",
             };
           });
         }
@@ -167,7 +201,9 @@ export async function handleAdminAPI(request: Request, env: any) {
 
       config[s.toLowerCase()] = data;
     }
-    return jsonRes({ config });
+
+    const configWithStats = await mergeStatsFromLiuKV(env, config);
+    return jsonRes({ config: configWithStats });
   }
 
   if (request.method === "POST") {

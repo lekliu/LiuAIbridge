@@ -19,7 +19,12 @@ preview_id = "YOUR_KV_PREVIEW_NAMESPACE_ID"
 # ADMIN_TOKEN  = ""   # populate via: wrangler secret put ADMIN_TOKEN
 # BRIDGE_TOKEN = ""   # populate via: wrangler secret put BRIDGE_TOKEN
 
-[routes]
+# LiuKV 统计数据存储配置（可选）
+# LIUKV_ENDPOINT = ""  # populate via: wrangler secret put LIUKV_ENDPOINT  # e.g. https://nkv.703803.xyz
+# LIUKV_TOKEN = ""     # populate via: wrangler secret put LIUKV_TOKEN     # e.g. KV123456
+# LIUKV_NAMESPACE = "" # populate via: wrangler secret put LIUKV_NAMESPACE # e.g. liuaibridge
+
+# [routes]
 # routes = [
 #   { pattern = "ai-bridge.example.com/*", zone_name = "example.com" }
 # ]
